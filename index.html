@@ -1,0 +1,147 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deaf Detector — Real-Time Threat Detection & Inline WAF SOC</title>
+  <style>
+    :root {
+      --bg: #0b0f17; --panel: #131a26; --border: #232f42; --text: #d8e1ee;
+      --muted: #7f8ea3; --accent: #38bdf8; --crit: #ef4444; --high: #f97316; --ok: #22c55e;
+    }
+    * { box-sizing: border-box; font-family: 'Segoe UI', system-ui, sans-serif; }
+    body { background: var(--bg); color: var(--text); margin: 0; padding: 20px; }
+    header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
+    h1 { margin: 0; font-size: 1.35rem; letter-spacing: 0.5px; }
+    .header-actions { display: flex; gap: 12px; align-items: center; }
+    .target-btn { background: var(--accent); color: #0b0f17; text-decoration: none; padding: 7px 14px; border-radius: 6px; font-weight: 700; font-size: 0.85rem; }
+    .target-btn:hover { opacity: 0.9; }
+    .status-pill { padding: 5px 12px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; background: rgba(34,197,94,0.15); color: var(--ok); }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 20px; }
+    .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .kpi span { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; }
+    .kpi strong { display: block; font-size: 1.8rem; margin-top: 4px; color: #fff; }
+    button { background: #1e293b; color: #fff; border: 1px solid var(--border); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.82rem; transition: 0.15s; }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    .layout { display: grid; grid-template-columns: 2.4fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .card h2 { margin: 0 0 12px 0; font-size: 1rem; color: var(--accent); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; }
+    .mono { font-family: monospace; font-size: 0.82rem; }
+    .badge { padding: 2px 7px; border-radius: 4px; font-weight: 700; font-size: 0.75rem; }
+    .CRITICAL { background: rgba(239,68,68,0.2); color: var(--crit); }
+    .HIGH { background: rgba(249,115,22,0.2); color: var(--high); }
+    .INFO { background: rgba(34,197,94,0.15); color: var(--ok); }
+    .ip-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; background: #0f1520; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Deaf Detector — Real-Time Inline WAF & Threat Detection SOC</h1>
+    <div class="header-actions">
+      <a class="target-btn" href="/site" target="_blank">Open Protected Target Site (/site) ↗</a>
+      <div id="connStatus" class="status-pill">Connecting to Stream...</div>
+    </div>
+  </header>
+
+  <div class="kpis">
+    <div class="kpi"><span>HTTP Requests Inspected</span><strong id="kpiTotal">0</strong></div>
+    <div class="kpi"><span>Attacks Blocked</span><strong id="kpiThreats" style="color: var(--crit);">0</strong></div>
+    <div class="kpi"><span>Quarantined IPs</span><strong id="kpiBlocked" style="color: var(--high);">0</strong></div>
+  </div>
+
+  <div class="layout">
+    <div class="card">
+      <h2>Live WAF Telemetry & Alert Stream</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Severity</th>
+            <th>Source IP</th>
+            <th>Endpoint</th>
+            <th>Detection Rule / MITRE</th>
+            <th>Payload</th>
+          </tr>
+        </thead>
+        <tbody id="feedBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Auto-Quarantined IPs</h2>
+      <div id="blocklistContainer" style="color: var(--muted); font-size: 0.85rem;">No IPs currently blocked.</div>
+    </div>
+  </div>
+
+  <script>
+    const API = window.location.protocol.startsWith('http') ? '' : 'http://127.0.0.1:8000';
+    const feedBody = document.getElementById('feedBody');
+    const connStatus = document.getElementById('connStatus');
+
+    const evtSource = new EventSource(`${API}/stream`);
+    evtSource.onopen = () => {
+      connStatus.textContent = '● Live SSE Stream Active';
+    };
+    evtSource.onerror = () => {
+      connStatus.textContent = '● Stream Disconnected';
+      connStatus.style.color = '#ef4444';
+    };
+
+    evtSource.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.stats) {
+        document.getElementById('kpiTotal').textContent = data.stats.total_events;
+        document.getElementById('kpiThreats').textContent = data.stats.threats_detected;
+      }
+      if (data.blocked_ips) renderBlocklist(data.blocked_ips);
+      if (data.event) prependEventRow(data.event);
+    };
+
+    function prependEventRow(ev) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="mono">${ev.timestamp}</td>
+        <td><span class="badge ${ev.severity}">${ev.severity}</span></td>
+        <td class="mono">${ev.source_ip}</td>
+        <td class="mono">${escapeHtml(ev.endpoint)}</td>
+        <td><strong>${ev.rule}</strong><br><span style="color:var(--muted);font-size:0.78rem;">${ev.mitre}</span></td>
+        <td class="mono">${escapeHtml(ev.payload)}</td>
+      `;
+      feedBody.prepend(tr);
+      if (feedBody.children.length > 40) feedBody.removeChild(feedBody.lastChild);
+    }
+
+    function renderBlocklist(blocked) {
+      const entries = Object.entries(blocked);
+      document.getElementById('kpiBlocked').textContent = entries.length;
+      const container = document.getElementById('blocklistContainer');
+      if (!entries.length) {
+        container.innerHTML = 'No IPs currently blocked.';
+        return;
+      }
+      container.innerHTML = entries.map(([ip, info]) => `
+        <div class="ip-item">
+          <div>
+            <div class="mono" style="color:#fff;font-weight:bold;">${ip}</div>
+            <div style="font-size:0.78rem;color:var(--high);">${info.reason} (${info.blocked_at})</div>
+          </div>
+          <button onclick="unblock('${ip}')">Unblock</button>
+        </div>
+      `).join('');
+    }
+
+    async function unblock(ip) {
+      await fetch(`${API}/unblock/${ip}`, { method: 'POST' });
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+    }
+  </script>
+</body>
+</html>
